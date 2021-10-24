@@ -6,18 +6,20 @@ unsigned int DB::port = 3306;
 std::string DB::user = "root";
 std::string DB::password = "1234";
 std::string DB::dbname = "basa";
-int send(int& sock, char* buff, unsigned int size)
+int send(int sock, char* buff, unsigned int size)
 {
 	if (send(sock, (char*)&size, sizeof(size), 0) == -1) { LOG("Error in send size\n"); return -1; }
 	return (send(sock, buff, size, 0) == -1);
 }
 
-int recv(int& sock, char* buff, int size)
+int recv(int sock, char* buff, int size)
 {
 	unsigned int Size;
 	if (recv(sock, (char*)&Size, sizeof(Size), 0) == -1) { LOG("Error in recv size\n"); return -1; }
 	if (Size > size) { LOG("Error in recv size was very big\n"); return -1; }
-	return (recv(sock, &buff, Size, 0) == -1);
+	recv(sock, buff, Size, 0);
+	LOG("Size = " << Size << " String from client = " << buff << "\n");//DBG
+	return 0;
 }
 
 bool DB::start() {
@@ -69,15 +71,15 @@ bool sendTable(int &sock, std::string select, std::string startSending)
 std::string getTable(int ID) {
 	switch(ID) {
 	case 1: return "SELECT Примерная_цена FROM Анкер WHERE Код=";
-	case 2: return "SELECT Примерная_цена Бридж WHERE Код=";
-	case 3: return "SELECT Цена Вид_сборки WHERE Код=";
-	case 4: return "SELECT Примерная_цена Материал_корпуса WHERE Код=";
-	case 5: return "SELECT Примерная_цена Струны WHERE Код=";
-	case 6: return "SELECT Примерная_цена Материал_грифа WHERE Код=";
-	case 7: return "SELECT Цена Покраска WHERE Код=";
-	case 8: return "SELECT Примерная_цена Электронная_начинка WHERE Код=";
-	case 9: return "SELECT Примерная_цена Колки WHERE Код=";
-	case 10: return "SELECT Примерная_цена Звукосниматель WHERE Код=";
+	case 2: return "SELECT Примерная_цена FROM Бридж WHERE Код=";
+	case 3: return "SELECT Цена FROM Вид_сборки WHERE Код=";
+	case 4: return "SELECT Примерная_цена FROM Материал_корпуса WHERE Код=";
+	case 5: return "SELECT Примерная_цена FROM Струны WHERE Код=";
+	case 6: return "SELECT Примерная_цена FROM Материал_грифа WHERE Код=";
+	case 7: return "SELECT Цена FROM Покраска WHERE Код=";
+	case 8: return "SELECT Примерная_цена FROM Электронная_начинка WHERE Код=";
+	case 9: return "SELECT Примерная_цена FROM Колки WHERE Код=";
+	case 10: return "SELECT Примерная_цена FROM Звукосниматель WHERE Код=";
 	default: return "";
 	}
 }
@@ -94,9 +96,9 @@ std::string updateTable(int ID) {
 
 void session(int& sock)
 {
-	char comandBuff[3000] = { 0 };
+	char comandBuff[3000];
 	if (recv(sock, comandBuff, 3000) == -1) { LOG("Error in recv msg in Session\n"); return; }		//Get command to start or continue old session
-	if (strncmp(comandBuff, "Continue", 8) == 0) goto Continue;													//After crash client can skip load tables
+	if (strncmp(comandBuff, "Continue", 8) == 0) goto Continue;	
 	/******Load and send tables to client********/
 	if (!sendTable(sock, "SELECT Код, Тип_анкера FROM Анкер", "Анкер|Код|Тип_анкера")) return;
 	if (!sendTable(sock, "SELECT Код, Фирма, Модель FROM Бридж", "Бридж|Код|Фирма|Модель")) return;
@@ -119,7 +121,7 @@ Continue:
 		if (recv(sock, comandBuff, 3000) == -1) { LOG("Error in recv msg in Session\n"); return; }	//Get command with TableID
 		if (strncmp(comandBuff, "ENDCALC", 7) == 0) break;													//Check exit condition 
 		sscanf(comandBuff, "%d|%d", &tableID, &valueID);												//Parse tableId ans
-		std::string sqlString = getTable(tableID);														//Get sql request string to get cost from TableID
+		std::string sqlString = getTable(tableID);													//Get sql request string to get cost from TableID
 		if (sqlString == "") { if (send(sock, (char*)"-1", 3) == -1) { LOG("Error in send msg in Session\n"); return; } }//If uncknwn ID send error;															
 		else {
 			sqlString += std::to_string(valueID);														//Add Value ID to sql reqest
@@ -134,7 +136,8 @@ Continue:
 		}
 	}
 	/********************************************/
-	res = DB::sendReq("INSERT INTO Заказ(Дата_заказа) VALUES(NOW()); SELECT @@IDENTITY AS ID");			//Gen new Order in Base with DateTime = NOW
+	DB::sendReq("INSERT INTO Заказ(Дата_заказа) VALUES(NOW())");			//Gen new Order in Base with DateTime = NOW
+	res = DB::sendReq("SELECT LAST_INSERT_ID() FROM Заказ");
 	if (res == nullptr) { LOG(DB::mysqlError() << "Error in sending request\n"); return; }
 	std::stringstream  ssOrderID;
 	if ((row = mysql_fetch_row(res)) != nullptr) ssOrderID << (row[0] ? row[0] : NULL); //mutex for BD?	//Get new Order ID
@@ -152,14 +155,14 @@ Continue:
 			std::stringstream ssTemp;
 			if (recv(sock, tempdataBuff, 16777215) == -1) { LOG("Error in recv msg in Session\n"); delete[] tempdataBuff;  delete[] dataBuff; return; } //recv Description
 			ssTemp << "UPDATE Заказ SET Дополнительные_пожелания='" << tempdataBuff << "' WHERE Код=" << ssOrderID.str(); //Construct sql request string
-			if (DB::sendReq(ssTemp.str().c_str()) == nullptr) { LOG(DB::mysqlError() << "Error in sending request\n") delete[] tempdataBuff; delete[] dataBuff; return; } //send request
+			DB::sendReq(ssTemp.str().c_str());//send request
 			delete[] tempdataBuff;
 			continue;
 		}
 		if(recv(sock, dataBuff, 65535) == -1) { LOG("Error in recv msg in Session\n"); delete[] dataBuff; return; }//If it isn't description, then it must be shorter, then 65 535 bytes
 		if (tableID == 6) {
-			int Kolk = 1, SoundGet = 1, Bridge = 1, Anker = 1, TypeBuild = 1, TypeGrif = 1, DecaMaterial = 1, Strings = 1, Stuff = 1, Colouring = 1, Electric = 1;
-			sscanf(dataBuff, "%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d", 
+			int Kolk = 1, SoundGet = 1, Bridge = 1, Anker = 1, TypeBuild = 1, TypeGrif = 1, DecaMaterial = 1, Strings = 1, Colouring = 1, Electric = 1, Stuff = 1;
+			sscanf(dataBuff, "%d|%d|%d|%d|%d|%d|%d|%d|%d|%d", 
 				&Kolk, 
 				&SoundGet, 
 				&Bridge, 
@@ -167,11 +170,11 @@ Continue:
 				&TypeBuild, 
 				&TypeGrif, 
 				&DecaMaterial, 
-				&Strings, 
-				&Stuff, 
+				&Strings,
 				&Colouring, 
 				&Electric);
 			std::stringstream ssTablesIDInOrder;
+			//TODO Get stuff ID;
 			ssTablesIDInOrder << "UPDATE Заказ SET Колки='" << Kolk
 				<< "' Звукосниматель='" << SoundGet
 				<< "' Бридж='" << Bridge
@@ -180,16 +183,16 @@ Continue:
 				<< "' Материал_грифа='" << TypeGrif
 				<< "' Материал_корпуса='" << DecaMaterial
 				<< "' Струны='" << Strings
-				<< "' Сотрудники='" << Stuff
 				<< "' Покраска='" << Colouring
 				<< "' Электронная_начинка='" << Electric
+				<< "' Сотрудник='" << Stuff
 				<< "' WHERE Код=" << ssOrderID.str();
-			if (DB::sendReq(ssTablesIDInOrder.str().c_str()) == nullptr) { LOG(DB::mysqlError() << "Error in sending request\n"); delete[] dataBuff; return;  }
+			DB::sendReq(ssTablesIDInOrder.str().c_str());
 			continue;
 		}
 		std::stringstream ssINFO;
 		ssINFO << updateTable(tableID) << dataBuff << "' WHERE Код=" << ssOrderID.str(); //Get sql request string
-		if (DB::sendReq(ssINFO.str().c_str()) == nullptr) { LOG(DB::mysqlError() << "Error in sending request\n"); delete[] dataBuff; return; } //send request
+		DB::sendReq(ssINFO.str().c_str()) ; //send request
 	}
 	delete[] dataBuff;
 	if (send(sock, (char*)ssOrderID.str().c_str(), ssOrderID.str().length() + 1) == -1) { LOG("Error in send msg in Session\n"); return; }
