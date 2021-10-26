@@ -14,6 +14,7 @@
 #include <ctime>
 #include <fstream>
 #include <thread>
+#include <map>
 #define LOG(msg) { Session::Log << "[" << time(0) << "]" << msg; Session::Log.flush(); }
 //u can use it only in server()
 #define DEATH(msg, exitCode) { Session::Log << "[" << time(0) << "]" << msg; Session::Log.flush(); Session::Log.close(); DB::stop(); return exitCode; }

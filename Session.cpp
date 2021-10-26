@@ -11,7 +11,6 @@ int send(int sock, char* buff, unsigned int size)
 	if (send(sock, (char*)&size, sizeof(size), 0) == -1) { LOG("Error in send size\n"); return -1; }
 	return (send(sock, buff, size, 0) == -1);
 }
-
 int recv(int sock, char* buff, int size)
 {
 	unsigned int Size;
@@ -39,6 +38,7 @@ MYSQL_RES* DB::sendReq(std::string req) {
 }
 /************************************************/
 
+/*********************Session********************/
 std::ofstream Session::Log;
 Session::Session(int Sock, time_t timeToLife)
 {
@@ -48,8 +48,8 @@ Session::Session(int Sock, time_t timeToLife)
 	timeStart = time(0);
 	doWork = std::thread(session, std::ref(sock));
 }
-
 bool Session::IsTimeUp() { return (time(0) - timeStart > ttl) ? true : false; }
+/************************************************/
 
 bool sendTable(int &sock, std::string select, std::string startSending)
 {
@@ -94,6 +94,23 @@ std::string updateTable(int ID) {
 	}
 }
 
+int GetStuffID()
+{
+	std::map<int, int> Stuff;
+	MYSQL_ROW row;
+	MYSQL_RES* res = DB::sendReq("SELECT Код FROM Сотрудники");
+	if (res == nullptr)	{ LOG(DB::mysqlError() << "Error in sending request\n"); return false; }
+	int min = 0, minID = 0, numFields = mysql_num_fields(res);
+	while ((row = mysql_fetch_row(res)) != nullptr) { LOG("ID" << atoi(row[0]) << "\n"); Stuff[atoi(row[0])] = 0; }
+	res = DB::sendReq("SELECT Сотрудник, COUNT(*) FROM Заказ GROUP BY Сотрудник");
+	if (res == nullptr)	{ LOG(DB::mysqlError() << "Error in sending request\n"); return false; }
+	numFields = mysql_num_fields(res);
+	while ((row = mysql_fetch_row(res)) != nullptr) if (row[0] != nullptr && row[1] != nullptr) Stuff[atoi(row[0])] = atoi(row[1]);
+	for (auto i : Stuff) if (i.second<min) { min = i.second; minID = i.first; }
+	return minID;
+}
+
+
 void session(int& sock)
 {
 	char comandBuff[3000];
@@ -136,30 +153,31 @@ Continue:
 		}
 	}
 	/********************************************/
+	//TODO mutex for BD? SYV
 	DB::sendReq("INSERT INTO Заказ(Дата_заказа) VALUES(NOW())");			//Gen new Order in Base with DateTime = NOW
 	res = DB::sendReq("SELECT LAST_INSERT_ID() FROM Заказ");
 	if (res == nullptr) { LOG(DB::mysqlError() << "Error in sending request\n"); return; }
 	std::stringstream  ssOrderID;
-	if ((row = mysql_fetch_row(res)) != nullptr) ssOrderID << (row[0] ? row[0] : NULL); //mutex for BD?	//Get new Order ID
+	if ((row = mysql_fetch_row(res)) != nullptr) ssOrderID << (row[0] ? row[0] : NULL); //Get new Order ID
 	else { LOG("Error in get ssOrderID in Session\n"); return; }
 	char* dataBuff = new char[65535];
 	while (true) {
 		memset(comandBuff, 0, 3000);
 		memset(dataBuff, 0, 65535);
 		tableID = 0;
-		if (recv(sock, comandBuff, 3000) == -1) { LOG("Error in recv msg in Session\n"); delete[] dataBuff;  return; } //Get command with id info to add in order
-		if (strncmp(comandBuff, "ENDCLIENTINFO", 13) == 0) break;											//If comand to end insert info - go away
-		sscanf(comandBuff, "%d", &tableID);																//Else in comand contains ID to insert info
-		if (tableID == 5) {																				//5 means that client send Description
-			char* tempdataBuff = new char[16777215];													//Descrtiption is MediumText = 16 777 215 bytes
+		if (recv(sock, comandBuff, 3000) == -1) { LOG("Error in recv msg in Session\n"); delete[] dataBuff;  return; } 		//Get command with id info to add in order
+		if (strncmp(comandBuff, "ENDCLIENTINFO", 13) == 0) break;															//If comand to end insert info - go away
+		sscanf(comandBuff, "%d", &tableID);																					//Else in comand contains ID to insert info
+		if (tableID == 5) {																									//5 means that client send Description
+			char* tempdataBuff = new char[16777215];																		//Descrtiption is MediumText = 16 777 215 bytes
 			std::stringstream ssTemp;
 			if (recv(sock, tempdataBuff, 16777215) == -1) { LOG("Error in recv msg in Session\n"); delete[] tempdataBuff;  delete[] dataBuff; return; } //recv Description
-			ssTemp << "UPDATE Заказ SET Дополнительные_пожелания='" << tempdataBuff << "' WHERE Код=" << ssOrderID.str(); //Construct sql request string
+			ssTemp << "UPDATE Заказ SET Дополнительные_пожелания='" << tempdataBuff << "' WHERE Код=" << ssOrderID.str(); 	//Construct sql request string
 			DB::sendReq(ssTemp.str().c_str());//send request
 			delete[] tempdataBuff;
 			continue;
 		}
-		if(recv(sock, dataBuff, 65535) == -1) { LOG("Error in recv msg in Session\n"); delete[] dataBuff; return; }//If it isn't description, then it must be shorter, then 65 535 bytes
+		if(recv(sock, dataBuff, 65535) == -1) { LOG("Error in recv msg in Session\n"); delete[] dataBuff; return; }			//If it isn't description, then it must be shorter, then 65 535 bytes
 		if (tableID == 6) {
 			int Kolk = 1, SoundGet = 1, Bridge = 1, Anker = 1, TypeBuild = 1, TypeGrif = 1, DecaMaterial = 1, Strings = 1, Colouring = 1, Electric = 1, Stuff = 1;
 			sscanf(dataBuff, "%d|%d|%d|%d|%d|%d|%d|%d|%d|%d", 
@@ -174,19 +192,19 @@ Continue:
 				&Colouring, 
 				&Electric);
 			std::stringstream ssTablesIDInOrder;
-			//TODO Get stuff ID;
-			ssTablesIDInOrder << "UPDATE Заказ SET Колки='" << Kolk
-				<< "' Звукосниматель='" << SoundGet
-				<< "' Бридж='" << Bridge
-				<< "' Анкер='" << Anker
-				<< "' Вид_сборки='" << TypeBuild
-				<< "' Материал_грифа='" << TypeGrif
-				<< "' Материал_корпуса='" << DecaMaterial
-				<< "' Струны='" << Strings
-				<< "' Покраска='" << Colouring
-				<< "' Электронная_начинка='" << Electric
-				<< "' Сотрудник='" << Stuff
-				<< "' WHERE Код=" << ssOrderID.str();
+			Stuff = GetStuffID();
+			ssTablesIDInOrder << "UPDATE Заказ SET Колки=" << Kolk
+				<< ", Звукосниматели=" << SoundGet
+				<< ", Бридж=" << Bridge
+				<< ", Анкер=" << Anker
+				<< ", Вид_сборки=" << TypeBuild
+				<< ", Материал_грифа=" << TypeGrif
+				<< ", Материал_корпуса=" << DecaMaterial
+				<< ", Струны=" << Strings
+				<< ", Покраска=" << Colouring
+				<< ", Электронная_начинка=" << Electric
+				<< ", Сотрудник=" << Stuff
+				<< " WHERE Код=" << ssOrderID.str();
 			DB::sendReq(ssTablesIDInOrder.str().c_str());
 			continue;
 		}
